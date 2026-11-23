@@ -121,7 +121,7 @@ Simple-ISP-pipeline/
 | --- | --- | --- |
 | 阶段一 | 仓库结构 + DNG 解析与元数据核对 | ✅ 完成 |
 | 阶段二 | BLC → DPC → LSC → AWB → 双线性去马赛克 → CCM/Gamma 全链路 | ✅ 完成 |
-| 阶段三 | RAW 域降噪 / Hamilton-Adams 去马赛克 / LTM / YUV 锐化 / 指标评测 | ⏳ 待做 |
+| 阶段三 | RAW 域降噪 / Hamilton-Adams 去马赛克 / LTM / YUV 锐化 / 指标评测 | ✅ 完成 |
 | 阶段四 | C++ + OpenMP 算子加速 / 文档与架构图 | ⏳ 待做 |
 
 ### 环境准备
@@ -158,6 +158,74 @@ python main.py --no-dpc --no-comparison       # 关闭坏点校正 / 跳过对�
 * `results/<文件名>_isp.png`：流水线最终出图（全分辨率约 10 MB，已加入 `.gitignore`，运行即可复现）；
 * `results/blc_comparison.png`：BLC 开关对比图（整图 + 暗部放大 + 裁剪区均值 RGB）。
 
+### 3. 阶段三：核心算法升级与指标量化
+
+```bash
+# RAW 域降噪（夜间高 ISO 场景）
+python main.py --input data/lowlight_night_ricoh-griiix.dng \
+    --raw-nr --demosaic hamilton --sharpen --figures nr
+
+# 梯度导向去马赛克（窗框 / 高频纹理）
+python main.py --input data/backlit_window_nikon.nef --demosaic hamilton --figures demosaic
+
+# 局部色调映射（逆光窗边）
+python main.py --input data/backlit_window_nikon.nef --ltm --ltm-compress 0.6 --figures ltm
+
+# 客观指标：以 rawpy.postprocess 渲染为参考（含全局曝光对齐）
+python main.py --input data/backlit_window_nikon.nef --demosaic hamilton --metrics
+```
+
+新增开关：`--raw-nr` / `--raw-nr-strength` / `--raw-nr-sigma`、`--demosaic {bilinear,hamilton}`、
+`--ltm` / `--ltm-compress` / `--ltm-radius`、`--sharpen` / `--sharpen-amount` / `--sharpen-coring`、
+`--figures {nr,demosaic,ltm,blc,all}`、`--metrics`。
+
+#### 3.1 三个核心算法
+
+| 模块 | 实现要点 |
+| --- | --- |
+| `raw_nr.py` | 按 CFA 相位拆成 R/Gr/Gb/B 四个半分辨率子图，各自做双边滤波再拼回；`σr` 由 96×96 分块噪声估计（同色相邻差 + MAD，取 75 分位）自适应得到 |
+| `demosaic.py` | Hamilton-Adams：在 R/B 位置比较水平/垂直二阶梯度，沿较小方向插值 G 并加 Laplacian 修正；再用色差恒定假设插值 R−G、B−G，并对插值色差做 3×3 中值滤波抑制伪彩 |
+| `yuv_post.py` | 引导滤波把 log 亮度分解为基础层 + 细节层，压缩基础层（`compress=0.6`）后按比例回填 RGB；Gamma 后在 YUV 域仅对 Y 做带 coring 死区的 USM 锐化 |
+
+#### 3.2 合成真值验证（排除参考色调干扰）
+
+把 libraw 渲染的线性 RGB 当作真值 → 按 CFA 采样回马赛克 → 重建，比较重建结果：
+
+| 场景 | 双线性 | Hamilton-Adams | 提升 |
+| --- | --- | --- | --- |
+| Z6 窗边 | 36.92 dB / SSIM 0.9699 | **41.89 dB / SSIM 0.9862** | +4.97 dB |
+| D70 户外 | 36.84 dB / SSIM 0.9316 | **40.15 dB / SSIM 0.9711** | +3.31 dB |
+
+降噪（向真值马赛克加入 σ=0.01 高斯噪声，σr=0.015，对比干净重建）：
+
+| 场景 | 无降噪 | RAW 域降噪 | Demosaic 后 RGB 域降噪 |
+| --- | --- | --- | --- |
+| Z6 窗边 | 39.89 dB / 0.9319 | **42.56 dB / 0.9684** | 40.68 dB / 0.9449 |
+| D70 户外 | 39.36 dB / 0.9540 | **39.80 dB / 0.9609** | 39.57 dB / 0.9574 |
+
+复现命令：`python -m tools.validate_stages --input <raw> --crop 400 1400 800 2000`
+
+#### 3.3 与 libraw 参考的客观指标
+
+（`rawpy.postprocess(use_camera_wb=True, no_auto_bright=True)`，评测前做全局曝光对齐；运行 `--metrics` 会写出 `results/metrics.json`）
+
+| 场景 | 配置 | PSNR (dB) | SSIM | ΔE₀₀ mean | ΔE₀₀ p95 |
+| --- | --- | --- | --- | --- | --- |
+| D70 户外 | Baseline（双线性） | 22.99 | 0.8386 | 6.60 | 12.19 |
+| D70 户外 | + Hamilton-Adams | **23.41** | **0.9061** | **6.02** | **9.68** |
+| Z6 逆光窗边 | Baseline | 20.54 | 0.4855 | 6.93 | 10.61 |
+| Z6 逆光窗边 | + Hamilton-Adams | **20.64** | **0.5037** | **6.55** | **10.32** |
+| Ricoh 夜间 | Baseline | 27.66 | 0.4465 | 3.19 | 7.17 |
+| Ricoh 夜间 | + Hamilton-Adams + RAW NR | 27.66 | 0.4344 | **2.83** | **6.78** |
+
+> 说明：libraw 参考自身带噪声与不同的高光处理，因此“去噪”后与参考的 SSIM 不一定上升，NR 的收益应看合成真值表与 `nr_comparison.png` 的 HF σ；LTM 属于主观风格化处理，会主动改变色调映射，故未列入参考指标对比（其效果见 3.4 的暗部亮度与高光裁切统计）。
+
+#### 3.4 可视化对比
+
+* `results/nr_comparison.png`：夜间暗部 +3 EV 放大，HF σ 3.39 → RAW 域 2.52 / RGB 域 2.64，且 RAW 域无明显色斑；
+* `results/demosaic_comparison.png`：窗框/网格高频区域 4× 放大，双线性出现拉链与伪彩，Hamilton-Adams 明显更干净；
+* `results/ltm_comparison.png`：逆光窗边暗部平均亮度 42.2 → 80.3（/255），高光裁切 0.50% → 1.69%，室内细节恢复且窗外不过曝。
+
 ### 测试数据（本地文件，已被 `.gitignore` 忽略）
 
 | 文件 | 相机 / 格式 | 场景 | 用途 |
@@ -178,4 +246,6 @@ python main.py --no-dpc --no-comparison       # 关闭坏点校正 / 跳过对�
 * **CCM 方向**：`rawpy.color_matrix` 是 libraw 的 `rgb_cam`，即 **camera → linear sRGB** 矩阵，直接作为 CCM 使用即可；若再乘一次 `sRGB → XYZ` 会让红/青严重过饱和（本仓库第一版就踩过这个坑）。
 * **CFA 相位**：所有拆分、插值、增益都基于 `raw_pattern` 生成的相位索引图（`utils/cfa.py`），避免 RGGB/BGGR 相位错位。
 * **绿色双相位**：Green 占 2 个 CFA 相位，只在 R/B 位置取四邻域平均，在 G 位置保留采样值；否则每个绿像素都会被邻域混合而变糊。
+* **噪声估计**：全局 MAD 会低估晴空占比大的夜景、又高估纹理丰富的白天场景；改为 96×96 分块取 75 分位，兼顾两者，也可用 `--raw-nr-sigma` 显式覆盖。
+* **参考指标**：libraw 的色调曲线与高光恢复与自研流水线不同，绝对 PSNR 只有 20–28 dB（已做曝光对齐），所以算法收益同时用「合成真值」验证（见 3.2）。
 * **黑电平**：样本 DNG 的 `BlackLevel` 标签为 0。为演示 BLC 效果，`blc_comparison.png` 中注入了 256 counts 的模拟 pedestal，并在图标题中注明，避免把仿真结果当成真实传感器数据。
