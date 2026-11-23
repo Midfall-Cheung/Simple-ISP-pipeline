@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+.vscode/
+.idea/
+data/*.dng
+data/*.DNG
+data/*.raw
+data/*.arw
+.venv/
+venv/
+.DS_Store
+# full-resolution outputs are reproducible build artifacts
+results/*_isp.png
