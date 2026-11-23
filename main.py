@@ -5,7 +5,7 @@ RAW (DNG) -> BLC -> DPC -> LSC -> AWB -> demosaic -> CCM -> gamma -> PNG
 
 Usage::
 
-    # process every DNG in data/ and write results/<stem>_isp.png
+    # process every RAW in data/ and write results/<stem>_isp.png
     python main.py
 
     python main.py --input data/a0001-jmac_DSC1459.dng --awb gray_world
@@ -34,6 +34,12 @@ from utils.raw_loader import RawFrame, camera_to_srgb_matrix, load_dng  # noqa: 
 ROOT = Path(__file__).resolve().parent
 DATA_DIR = ROOT / "data"
 RESULTS_DIR = ROOT / "results"
+
+# Any libraw-supported RAW extension counts for auto-discovery.
+RAW_SUFFIXES = {
+    ".dng", ".nef", ".arw", ".cr2", ".cr3", ".raf", ".orf",
+    ".rw2", ".pef", ".srw", ".raw", ".3fr", ".mrw",
+}
 
 
 # --------------------------------------------------------------------------- #
@@ -318,10 +324,12 @@ def config_from_args(args: argparse.Namespace) -> PipelineConfig:
 def discover_inputs(paths: Optional[List[Path]]) -> List[Path]:
     if paths:
         return [Path(p) for p in paths]
-    found = sorted(DATA_DIR.glob("*.dng")) + sorted(DATA_DIR.glob("*.DNG"))
+    found = sorted(
+        p for p in DATA_DIR.iterdir() if p.suffix.lower() in RAW_SUFFIXES
+    )
     if not found:
         raise SystemExit(
-            f"no .dng files found in {DATA_DIR}; drop a RAW file there or pass --input"
+            f"no RAW files found in {DATA_DIR}; drop a DNG/NEF/ARW there or pass --input"
         )
     return found
 

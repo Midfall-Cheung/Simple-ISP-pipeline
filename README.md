@@ -147,7 +147,7 @@ python -m tools.inspect_raw data/*.dng --json results/dng_metadata.json
 ### 2. 运行完整流水线（阶段二）
 
 ```bash
-python main.py                                # 处理 data/ 下所有 .dng（默认相机白平衡）
+python main.py                                # 处理 data/ 下所有 RAW（默认相机白平衡）
 python main.py --awb gray_world               # 灰度世界法自动白平衡
 python main.py --lsc auto                     # 自动估计径向阴影系数（需平坦场景假设）
 python main.py --no-dpc --no-comparison       # 关闭坏点校正 / 跳过对比图
@@ -158,10 +158,24 @@ python main.py --no-dpc --no-comparison       # 关闭坏点校正 / 跳过对�
 * `results/<文件名>_isp.png`：流水线最终出图（全分辨率约 10 MB，已加入 `.gitignore`，运行即可复现）；
 * `results/blc_comparison.png`：BLC 开关对比图（整图 + 暗部放大 + 裁剪区均值 RGB）。
 
+### 测试数据（本地文件，已被 `.gitignore` 忽略）
+
+| 文件 | 相机 / 格式 | 场景 | 用途 |
+| --- | --- | --- | --- |
+| `a0001-jmac_DSC1459.dng` | Nikon D70 / DNG | Monument Valley 户外高反差、细节丰富 | BLC、去马赛克、CCM 基线验证 |
+| `backlit_window_nikon.nef` | Nikon Z 6 / NEF | 室内大厅逆光窗边：室内极暗、窗外雪山强光 | LTM 动态范围压缩、暗部恢复 |
+| `lowlight_night_ricoh-griiix.dng` | Ricoh GR IIIx / DNG | 夜间低照度高 ISO（Lecce 大教堂） | RAW 域降噪、YUV 锐化与噪点对比 |
+
+数据来源（pixls.us PlayRaw，作者公开分享供处理练习）：
+
+* `backlit_window_nikon.nef`：PlayRaw *Dynamic Range Management*，作者 ggbutcher，<https://discuss.pixls.us/t/play-raw-dynamic-range-management/13307>（原文件 <https://glenn.pulpitrock.net/playraw/DSZ_0619.NEF>）。
+* `lowlight_night_ricoh-griiix.dng`：PlayRaw *cleaning up/denoising night shots (Lecce, Ricoh GRIIIx)*，作者 aadm，<https://discuss.pixls.us/t/cleaning-up-denoising-night-shots-lecce-ricoh-griiix/57252>。
+
+> 说明：`utils/raw_loader.py` 基于 libraw，除 DNG 外也支持 NEF / CR2 / ARW 等主流 RAW；仓库只提交代码与对比图，30 MB 级原图不入库，按上面的链接可重新获取。
+
 ### 实现备注（踩坑记录）
 
 * **CCM 方向**：`rawpy.color_matrix` 是 libraw 的 `rgb_cam`，即 **camera → linear sRGB** 矩阵，直接作为 CCM 使用即可；若再乘一次 `sRGB → XYZ` 会让红/青严重过饱和（本仓库第一版就踩过这个坑）。
 * **CFA 相位**：所有拆分、插值、增益都基于 `raw_pattern` 生成的相位索引图（`utils/cfa.py`），避免 RGGB/BGGR 相位错位。
 * **绿色双相位**：Green 占 2 个 CFA 相位，只在 R/B 位置取四邻域平均，在 G 位置保留采样值；否则每个绿像素都会被邻域混合而变糊。
 * **黑电平**：样本 DNG 的 `BlackLevel` 标签为 0。为演示 BLC 效果，`blc_comparison.png` 中注入了 256 counts 的模拟 pedestal，并在图标题中注明，避免把仿真结果当成真实传感器数据。
-* **测试数据**：目前仓库只有 1 张 DNG（Monument Valley 户外高反差场景）；README 阶段一要求的“室内低照度高噪点”与“逆光窗边”场景图待补充，补图后需重跑阶段三的 NR / LTM 对比。

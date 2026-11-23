@@ -12,3 +12,6 @@ venv/
 # full-resolution outputs are reproducible build artifacts
 results/*_isp.png
 results/*.json
+data/*.nef
+data/*.NEF
+results/blc_comparison_*.png
