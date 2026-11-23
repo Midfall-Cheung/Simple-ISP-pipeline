@@ -36,7 +36,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np  # noqa: E402
 
-from modules import awb, blc, ccm_gamma, demosaic, dpc, lsc, raw_nr, yuv_post  # noqa: E402
+from modules import accel, awb, blc, ccm_gamma, demosaic, dpc, lsc, raw_nr, yuv_post  # noqa: E402
 from utils import metrics as metrics_utils  # noqa: E402
 from utils.raw_loader import RawFrame, camera_to_srgb_matrix, load_dng  # noqa: E402
 
@@ -79,6 +79,7 @@ class PipelineConfig:
     ltm_exposure: float = 1.0
 
     # display
+    backend: str = "auto"  # auto | python | cpp
     gamma: float = 2.2
     gamma_mode: str = "gamma"  # gamma | srgb
     sharpen: bool = False
@@ -98,6 +99,7 @@ def run_pipeline(
     """Run the ISP chain on one frame and return every intermediate result."""
     timings: Dict[str, float] = {}
     info: Dict[str, object] = {"input": str(frame.path), "cfa": frame.cfa_string}
+    info["backend"] = accel.resolve(config.backend)
 
     # ---- RAW domain -------------------------------------------------------
     tic = time.perf_counter()
@@ -126,6 +128,7 @@ def run_pipeline(
             mosaic, frame.pattern,
             sigma_color=config.raw_nr_sigma,
             strength=config.raw_nr_strength,
+            backend=config.backend,
         )
     timings["raw_nr"] = time.perf_counter() - tic
     info["raw_nr_sigma"] = sigma_used
@@ -158,8 +161,10 @@ def run_pipeline(
 
     # ---- RGB domain -------------------------------------------------------
     tic = time.perf_counter()
+    info["demosaic_backend"] = accel.resolve(config.backend) if config.demosaic == "hamilton" else "python"
     rgb_linear = demosaic.demosaic(
-        mosaic, frame.pattern, frame.color_desc, method=config.demosaic
+        mosaic, frame.pattern, frame.color_desc,
+        method=config.demosaic, backend=config.backend,
     )
     timings["demosaic"] = time.perf_counter() - tic
 
@@ -539,7 +544,7 @@ def _print_summary(stem: str, result: dict, config: PipelineConfig) -> None:
         f"  LSC              : {info['lsc_mode']} (k1={info['lsc_k1']:.4f}, k2={info['lsc_k2']:.4f})"
     )
     print(f"  AWB              : {info['awb_mode']} gains={info['wb_gains']}")
-    print(f"  Demosaic         : {config.demosaic}")
+    print(f"  Demosaic         : {config.demosaic} ({info.get('demosaic_backend', '?')} backend)")
     print(f"  LTM              : {'on' if config.ltm else 'off'} (compress={config.ltm_compress:g})")
     print(f"  Sharpen (YUV)    : {'on' if config.sharpen else 'off'}")
     print("  stage timings (ms):")
@@ -580,6 +585,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--demosaic", choices=["bilinear", "hamilton"], default="bilinear",
         help="demosaic algorithm",
     )
+    parser.add_argument(
+        "--backend", choices=["auto", "python", "cpp"], default="auto",
+        help="kernel backend (cpp = C++/OpenMP build from tools/build_cpp.py)",
+    )
     parser.add_argument("--ltm", action="store_true", help="enable guided-filter local tone mapping")
     parser.add_argument("--ltm-compress", type=float, default=0.6, help="log-base compression")
     parser.add_argument("--ltm-radius", type=int, default=24, help="guided filter radius")
@@ -613,6 +622,7 @@ def config_from_args(args: argparse.Namespace) -> PipelineConfig:
         lsc_k2=args.lsc_k2,
         awb_mode=args.awb,
         demosaic=args.demosaic,
+        backend=args.backend,
         ltm=args.ltm,
         ltm_compress=args.ltm_compress,
         ltm_radius=args.ltm_radius,

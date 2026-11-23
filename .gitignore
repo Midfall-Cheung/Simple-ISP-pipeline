@@ -15,3 +15,4 @@ results/*.json
 data/*.nef
 data/*.NEF
 results/blc_comparison_*.png
+modules/_isp_accel*.so

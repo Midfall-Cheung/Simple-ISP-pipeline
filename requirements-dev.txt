@@ -1,0 +1,2 @@
+# Build-time / validation extras (not needed to run the NumPy pipeline)
+pybind11>=2.11

@@ -24,6 +24,7 @@ from __future__ import annotations
 import cv2
 import numpy as np
 
+from modules import accel
 from utils.cfa import channel_map, color_groups
 
 # 1-2-1 separable bilinear kernel (unnormalised; normalisation per phase is
@@ -100,6 +101,7 @@ def hamilton_adams_demosaic(
     mosaic: np.ndarray,
     pattern: np.ndarray,
     color_desc: str = "RGBG",
+    backend: str = "auto",
 ) -> np.ndarray:
     """Gradient-directed demosaic (Hamilton-Adams 1997).
 
@@ -110,6 +112,9 @@ def hamilton_adams_demosaic(
     3. Median-filter the interpolated differences to kill false colour while
        keeping the measured sites untouched.
     """
+    if accel.resolve(backend) == "cpp":
+        return accel.hamilton_adams(mosaic, pattern, color_desc)
+
     mosaic = np.asarray(mosaic, dtype=np.float32)
     g_pad, c_pad, rmask, bmask = _shifted_planes(mosaic, pattern, color_desc)
 
@@ -159,11 +164,12 @@ def demosaic(
     pattern: np.ndarray,
     color_desc: str = "RGBG",
     method: str = "bilinear",
+    backend: str = "auto",
     **kwargs,
 ) -> np.ndarray:
     """Dispatch to the requested demosaic implementation."""
     if method == "bilinear":
         return bilinear_demosaic(mosaic, pattern, color_desc)
     if method == "hamilton":
-        return hamilton_adams_demosaic(mosaic, pattern, color_desc)
+        return hamilton_adams_demosaic(mosaic, pattern, color_desc, backend=backend)
     raise ValueError(f"unknown demosaic method: {method!r}")
