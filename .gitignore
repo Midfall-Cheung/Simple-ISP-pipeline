@@ -11,3 +11,4 @@ venv/
 .DS_Store
 # full-resolution outputs are reproducible build artifacts
 results/*_isp.png
+results/*.json
