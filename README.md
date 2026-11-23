@@ -122,7 +122,7 @@ Simple-ISP-pipeline/
 | 阶段一 | 仓库结构 + DNG 解析与元数据核对 | ✅ 完成 |
 | 阶段二 | BLC → DPC → LSC → AWB → 双线性去马赛克 → CCM/Gamma 全链路 | ✅ 完成 |
 | 阶段三 | RAW 域降噪 / Hamilton-Adams 去马赛克 / LTM / YUV 锐化 / 指标评测 | ✅ 完成 |
-| 阶段四 | C++ + OpenMP 算子加速 / 文档与架构图 | ⏳ 待做 |
+| 阶段四 | C++ + OpenMP 算子加速 / 文档与架构图 | ✅ 完成 |
 
 ### 环境准备
 
@@ -193,15 +193,15 @@ python main.py --input data/backlit_window_nikon.nef --demosaic hamilton --metri
 
 | 场景 | 双线性 | Hamilton-Adams | 提升 |
 | --- | --- | --- | --- |
-| Z6 窗边 | 36.92 dB / SSIM 0.9699 | **41.89 dB / SSIM 0.9862** | +4.97 dB |
-| D70 户外 | 36.84 dB / SSIM 0.9316 | **40.15 dB / SSIM 0.9711** | +3.31 dB |
+| Z6 窗边 | 36.92 dB / SSIM 0.9699 | **41.46 dB / SSIM 0.9851** | +4.54 dB |
+| D70 户外 | 36.84 dB / SSIM 0.9316 | **40.01 dB / SSIM 0.9705** | +3.17 dB |
 
 降噪（向真值马赛克加入 σ=0.01 高斯噪声，σr=0.015，对比干净重建）：
 
 | 场景 | 无降噪 | RAW 域降噪 | Demosaic 后 RGB 域降噪 |
 | --- | --- | --- | --- |
-| Z6 窗边 | 39.89 dB / 0.9319 | **42.56 dB / 0.9684** | 40.68 dB / 0.9449 |
-| D70 户外 | 39.36 dB / 0.9540 | **39.80 dB / 0.9609** | 39.57 dB / 0.9574 |
+| Z6 窗边 | 39.91 dB / 0.9323 | **42.57 dB / 0.9686** | 40.69 dB / 0.9452 |
+| D70 户外 | 39.37 dB / 0.9541 | **39.81 dB / 0.9610** | 39.58 dB / 0.9575 |
 
 复现命令：`python -m tools.validate_stages --input <raw> --crop 400 1400 800 2000`
 
@@ -212,11 +212,11 @@ python main.py --input data/backlit_window_nikon.nef --demosaic hamilton --metri
 | 场景 | 配置 | PSNR (dB) | SSIM | ΔE₀₀ mean | ΔE₀₀ p95 |
 | --- | --- | --- | --- | --- | --- |
 | D70 户外 | Baseline（双线性） | 22.99 | 0.8386 | 6.60 | 12.19 |
-| D70 户外 | + Hamilton-Adams | **23.41** | **0.9061** | **6.02** | **9.68** |
+| D70 户外 | + Hamilton-Adams | **23.40** | **0.9059** | **6.02** | **9.68** |
 | Z6 逆光窗边 | Baseline | 20.54 | 0.4855 | 6.93 | 10.61 |
 | Z6 逆光窗边 | + Hamilton-Adams | **20.64** | **0.5037** | **6.55** | **10.32** |
 | Ricoh 夜间 | Baseline | 27.66 | 0.4465 | 3.19 | 7.17 |
-| Ricoh 夜间 | + Hamilton-Adams + RAW NR | 27.66 | 0.4344 | **2.83** | **6.78** |
+| Ricoh 夜间 | + Hamilton-Adams + RAW NR | 27.66 | 0.4343 | **2.83** | **6.77** |
 
 > 说明：libraw 参考自身带噪声与不同的高光处理，因此“去噪”后与参考的 SSIM 不一定上升，NR 的收益应看合成真值表与 `nr_comparison.png` 的 HF σ；LTM 属于主观风格化处理，会主动改变色调映射，故未列入参考指标对比（其效果见 3.4 的暗部亮度与高光裁切统计）。
 
@@ -249,3 +249,102 @@ python main.py --input data/backlit_window_nikon.nef --demosaic hamilton --metri
 * **噪声估计**：全局 MAD 会低估晴空占比大的夜景、又高估纹理丰富的白天场景；改为 96×96 分块取 75 分位，兼顾两者，也可用 `--raw-nr-sigma` 显式覆盖。
 * **参考指标**：libraw 的色调曲线与高光恢复与自研流水线不同，绝对 PSNR 只有 20–28 dB（已做曝光对齐），所以算法收益同时用「合成真值」验证（见 3.2）。
 * **黑电平**：样本 DNG 的 `BlackLevel` 标签为 0。为演示 BLC 效果，`blc_comparison.png` 中注入了 256 counts 的模拟 pedestal，并在图标题中注明，避免把仿真结果当成真实传感器数据。
+
+---
+
+## 架构流程图
+
+```mermaid
+flowchart LR
+    A[RAW / DNG / NEF] --> B[BLC]
+    B --> C[DPC]
+    C --> D[RAW NR<br/>bilateral per CFA phase]
+    D --> E[LSC]
+    E --> F[AWB]
+    F --> G[Demosaic<br/>Bilinear / Hamilton-Adams]
+    G --> H[CCM]
+    H --> I[LTM<br/>guided filter]
+    I --> J[Gamma]
+    J --> K[YUV USM<br/>coring]
+    K --> L[PNG / 对比图 / 指标]
+
+    subgraph RAW[RAW 域]
+        B
+        C
+        D
+        E
+        F
+    end
+    subgraph RGB[RGB 域]
+        G
+        H
+        I
+    end
+    subgraph DISP[显示域]
+        J
+        K
+    end
+```
+
+C++/OpenMP 内核位于 `csrc/isp_accel.cpp`，覆盖 `RAW NR` 与 `Hamilton-Adams` 两个热点；
+Python 端通过 pybind11 调用，缺失时自动回退到 NumPy/OpenCV 实现。
+
+## 结果展示
+
+### 1. BLC 校准（关闭 vs 开启）— 暗部去紫、去灰雾
+
+![BLC 对比](results/blc_comparison.png)
+
+### 2. RAW 域 vs RGB 域降噪 — 暗部 +3 EV 放大
+
+![RAW NR 对比](results/nr_comparison.png)
+
+### 3. 去马赛克对比 — 窗框/网格高频区域 4× 放大
+
+![去马赛克对比](results/demosaic_comparison.png)
+
+### 4. LTM 动态范围压缩 — 逆光窗边暗部恢复
+
+![LTM 对比](results/ltm_comparison.png)
+
+## 性能对比
+
+硬件：**Apple M2（8 核）**，OpenMP 8 线程；每项预热 1 次后取 3 次中位数；
+复现命令 `python -m tools.benchmark`（结果同时写入 `results/benchmark.json`）。
+
+| 场景 | 阶段 | Python (ms) | C++/OpenMP (ms) | 加速比 |
+| --- | --- | ---: | ---: | ---: |
+| D70 户外（6 MP） | Hamilton-Adams 去马赛克 | 203.8 | 105.6 | **1.93×** |
+| Z6 逆光窗边（24 MP） | Hamilton-Adams 去马赛克 | 1596.6 | 378.3 | **4.22×** |
+| Ricoh 夜间（24 MP） | Hamilton-Adams 去马赛克 | 802.2 | 375.6 | **2.14×** |
+| D70 户外（6 MP） | RAW 双边降噪 | 25.0 | 41.5 | 0.60× |
+| Z6 逆光窗边（24 MP） | RAW 双边降噪 | 97.8 | 110.0 | 0.89× |
+| Ricoh 夜间（24 MP） | RAW 双边降噪 | 93.6 | 102.4 | 0.91× |
+| Z6 逆光窗边（24 MP） | 完整流水线（含读盘） | 4266.9 | 2867.8 | **1.49×** |
+| Ricoh 夜间（24 MP） | 完整流水线（含读盘） | 4385.9 | 3185.4 | **1.38×** |
+
+结论与取舍：
+
+* 热点确实是 **Hamilton-Adams 去马赛克**（24 MP 上 Python 路径 0.8–1.6 s），C++ 内核把行循环融合成 5 个 OpenMP pass，获得 **1.9–4.2×** 加速，24 MP 单帧整体从 **4.39 s 降到 3.19 s**（1.38×）。
+* 双边滤波上，OpenCV 的 `bilateralFilter`（SIMD + 内部线程 + 快速 exp）仍快于手写标量内核，因此 `--backend auto` 每个阶段选择实测更快的路径：**NR 用 OpenCV，去马赛克用 C++**；`--backend cpp` 可强制全 C++ 路径用于对照实验。
+* 两种实现的输出一致性：6 MP 场景 **PSNR 59.35 dB**、24 MP 窗边裁剪 **51.5 dB**；差异集中在少数梯度平局像素与边界，肉眼不可辨。
+
+## 环境配置与一键运行
+
+```bash
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt          # numpy / opencv / rawpy / scipy / matplotlib
+
+# 可选：编译 C++/OpenMP 加速内核（需要 Homebrew libomp）
+brew install libomp
+pip install -r requirements-dev.txt       # pybind11
+python -m tools.build_cpp
+```
+
+```bash
+make demo      # 全量升级跑 data/ 下所有 RAW：出图 + 3 张对比图 + 指标
+make bench     # 复现上面的性能对比表
+python -m utils.metrics   # 指标库自检（CIEDE2000 / Lab / 分块一致性）
+```
+
+> 没有编译内核也能跑：所有阶段都有 NumPy/OpenCV 回退实现，`--backend python` 可显式禁用 C++。
