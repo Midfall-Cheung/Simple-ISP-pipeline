@@ -1,6 +1,6 @@
 # Simple-ISP-pipeline
-```markdown
-# 端到端软件 ISP Pipeline 仿真与画质增强系统 — 完整开发大纲
+
+端到端软件 ISP Pipeline 仿真与画质增强系统 — 完整开发大纲
 
 ## 阶段一：仓库初始化与数据解析验证（Day 1）
 
