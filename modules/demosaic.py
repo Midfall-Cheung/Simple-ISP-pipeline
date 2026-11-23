@@ -14,7 +14,9 @@ fall back to the measured value exactly where green is sampled.
 The kernel weights are chosen so that measured pixels keep their own value,
 i.e. this is an interpolator, not a smoothing filter.
 
-Stage 3 will upgrade this to a gradient-directed (Hamilton-Adams) version.
+Stage 3 adds the gradient-directed **Hamilton-Adams** interpolator, which
+reconstructs green along the direction with the smaller second-order gradient
+and then rebuilds R/B through the constant colour-difference assumption.
 """
 
 from __future__ import annotations
@@ -78,6 +80,80 @@ def bilinear_demosaic(
     return np.clip(np.stack(planes, axis=-1), 0.0, 1.0).astype(np.float32)
 
 
+def _shifted_planes(mosaic: np.ndarray, pattern: np.ndarray, color_desc: str):
+    """Pad the sparse colour planes by 2 and return aligned shifts."""
+    cmap = channel_map(pattern, mosaic.shape)
+    groups = color_groups(color_desc)
+    gmask = np.isin(cmap, groups["G"])
+    rmask = cmap == groups["R"][0]
+    bmask = cmap == groups["B"][0]
+
+    def pad(plane):
+        return cv2.copyMakeBorder(plane, 2, 2, 2, 2, cv2.BORDER_REFLECT_101)
+
+    g = pad(np.where(gmask, mosaic, 0.0).astype(np.float32))
+    c = pad(np.where(rmask | bmask, mosaic, 0.0).astype(np.float32))
+    return g, c, rmask, bmask
+
+
+def hamilton_adams_demosaic(
+    mosaic: np.ndarray,
+    pattern: np.ndarray,
+    color_desc: str = "RGBG",
+) -> np.ndarray:
+    """Gradient-directed demosaic (Hamilton-Adams 1997).
+
+    1. At R/B sites, compare the horizontal vs vertical second-order gradient
+       ``|2C - C(-2) - C(+2)| + |G(-1) - G(+1)|``; interpolate green along the
+       smoother direction and add the matching Laplacian correction.
+    2. Interpolate the colour differences ``R-G`` / ``B-G`` bilinearly.
+    3. Median-filter the interpolated differences to kill false colour while
+       keeping the measured sites untouched.
+    """
+    mosaic = np.asarray(mosaic, dtype=np.float32)
+    g_pad, c_pad, rmask, bmask = _shifted_planes(mosaic, pattern, color_desc)
+
+    g_left = g_pad[2:-2, 1:-3]
+    g_right = g_pad[2:-2, 3:-1]
+    g_up = g_pad[1:-3, 2:-2]
+    g_down = g_pad[3:-1, 2:-2]
+
+    c_center = c_pad[2:-2, 2:-2]
+    c_left2 = c_pad[2:-2, 0:-4]
+    c_right2 = c_pad[2:-2, 4:]
+    c_up2 = c_pad[0:-4, 2:-2]
+    c_down2 = c_pad[4:, 2:-2]
+
+    horizontal = 2.0 * c_center - c_left2 - c_right2
+    vertical = 2.0 * c_center - c_up2 - c_down2
+
+    d_h = np.abs(g_left - g_right) + np.abs(horizontal)
+    d_v = np.abs(g_up - g_down) + np.abs(vertical)
+
+    g_horizontal = 0.5 * (g_left + g_right) + 0.25 * horizontal
+    g_vertical = 0.5 * (g_up + g_down) + 0.25 * vertical
+
+    green_est = np.where(
+        d_h < d_v,
+        g_horizontal,
+        np.where(d_v < d_h, g_vertical, 0.5 * (g_horizontal + g_vertical)),
+    )
+    green = np.where(np.isin(channel_map(pattern, mosaic.shape), color_groups(color_desc)["G"]), mosaic, green_est)
+    green = np.clip(green, 0.0, 1.0)
+
+    def color_plane(mask: np.ndarray) -> np.ndarray:
+        diff = np.where(mask, mosaic - green, 0.0).astype(np.float32)
+        interpolated = _interpolate_plane(diff, mask)
+        # Median-filter only where the difference was interpolated.
+        median = cv2.medianBlur(np.ascontiguousarray(interpolated), 3)
+        diff_final = np.where(mask, mosaic - green, median)
+        return np.clip(green + diff_final, 0.0, 1.0)
+
+    red = color_plane(rmask)
+    blue = color_plane(bmask)
+    return np.stack([red, green, blue], axis=-1).astype(np.float32)
+
+
 def demosaic(
     mosaic: np.ndarray,
     pattern: np.ndarray,
@@ -89,7 +165,5 @@ def demosaic(
     if method == "bilinear":
         return bilinear_demosaic(mosaic, pattern, color_desc)
     if method == "hamilton":
-        raise NotImplementedError(
-            "Hamilton-Adams demosaic lands in stage 3; use method='bilinear' for now"
-        )
+        return hamilton_adams_demosaic(mosaic, pattern, color_desc)
     raise ValueError(f"unknown demosaic method: {method!r}")

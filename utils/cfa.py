@@ -50,3 +50,20 @@ def color_groups(color_desc: str) -> Dict[str, Tuple[int, ...]]:
         if idx:
             groups[name] = idx
     return groups
+
+
+def mosaic_from_rgb(rgb: np.ndarray, pattern: np.ndarray, color_desc: str = "RGBG") -> np.ndarray:
+    """Sample an RGB image through the CFA pattern (inverse of demosaicing).
+
+    Used by the synthetic validation tools where a rendered RGB frame is the
+    ground truth and the mosaic must be regenerated exactly.
+    """
+    rgb = np.asarray(rgb, dtype=np.float32)
+    cmap = channel_map(pattern, rgb.shape[:2])
+    groups = color_groups(color_desc)
+    out = np.zeros(rgb.shape[:2], dtype=np.float32)
+    out[cmap == groups["R"][0]] = rgb[..., 0][cmap == groups["R"][0]]
+    green_mask = np.isin(cmap, groups["G"])
+    out[green_mask] = rgb[..., 1][green_mask]
+    out[cmap == groups["B"][0]] = rgb[..., 2][cmap == groups["B"][0]]
+    return out
