@@ -204,6 +204,14 @@ def load_dng(path: str | Path, crop_margins: bool = False) -> RawFrame:
     if dng_cm.size == 9 and np.allclose(dng_cm, 0):
         dng_cm = None
 
+    # Some formats (e.g. several NEFs) come back with a zero rgb_cam even
+    # though the XYZ -> camera matrix is present; derive the CCM instead of
+    # silently producing a black image.
+    if not np.any(camera_to_srgb) and dng_cm is not None:
+        camera_to_srgb = camera_to_srgb_from_dng(dng_cm)
+    if not np.any(camera_to_srgb):
+        raise ValueError(f"no usable colour matrix found in {path}")
+
     meta: Dict[str, object] = {"sizes": sizes_dict}
     meta["_channel_map"] = _channel_map(pattern, mosaic.shape)
 
